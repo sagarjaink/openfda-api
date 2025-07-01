@@ -55,7 +55,7 @@ def _build_search(drug: str, exact: bool) -> str:
 
 # ── The MCP tool Claude will call ────────────────────────────────────────────
 @mcp.tool(
-    title="get_drug_indications",
+    name="get_drug_indications",
     description="Returns FDA-approved ‘Indications & Usage’ text plus metadata."
 )
 async def get_drug_indications(
