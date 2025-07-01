@@ -5,10 +5,11 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import traceback
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,33 +34,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MCP Protocol Classes
-class MCPMessage(BaseModel):
-    jsonrpc: str = "2.0"
-    id: Optional[Union[str, int]] = None
-    method: Optional[str] = None
-    params: Optional[Dict[str, Any]] = None
-    result: Optional[Any] = None
-    error: Optional[Dict[str, Any]] = None
-
-class MCPTool(BaseModel):
-    name: str
-    description: str
-    inputSchema: Dict[str, Any]
-
-class MCPInitializeResult(BaseModel):
-    protocolVersion: str
-    capabilities: Dict[str, Any]
-    serverInfo: Dict[str, str]
-
-# MCP Server State
+# MCP Server Implementation
 class MCPServer:
     def __init__(self):
-        self.tools = [
-            MCPTool(
-                name="get_drug_indications",
-                description="Get FDA-approved indications and usage information for a drug",
-                inputSchema={
+        self.initialized = False
+        self.client_info = None
+        
+    def get_server_info(self):
+        return {
+            "name": "openfda-mcp-server",
+            "version": "1.0.0"
+        }
+    
+    def get_capabilities(self):
+        return {
+            "tools": {}
+        }
+    
+    def get_tools(self):
+        return [
+            {
+                "name": "get_drug_indications",
+                "description": "Get FDA-approved indications and usage information for a drug",
+                "inputSchema": {
                     "type": "object",
                     "properties": {
                         "drug_name": {
@@ -81,35 +78,87 @@ class MCPServer:
                     },
                     "required": ["drug_name"]
                 }
-            )
+            }
         ]
     
-    async def handle_initialize(self, params: Dict[str, Any]) -> MCPInitializeResult:
-        """Handle MCP initialize request"""
-        return MCPInitializeResult(
-            protocolVersion="2024-11-05",
-            capabilities={
-                "tools": {}
-            },
-            serverInfo={
-                "name": "openfda-mcp-server",
-                "version": "1.0.0"
-            }
-        )
-    
-    async def handle_list_tools(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Handle tools/list request"""
-        return [tool.model_dump() for tool in self.tools]
-    
-    async def handle_call_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/call request"""
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
+    async def handle_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Handle MCP message and return response"""
+        try:
+            method = message.get("method")
+            params = message.get("params", {})
+            msg_id = message.get("id")
+            
+            logger.info(f"Handling MCP method: {method}")
+            
+            if method == "initialize":
+                self.client_info = params
+                self.initialized = True
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": self.get_capabilities(),
+                        "serverInfo": self.get_server_info()
+                    }
+                }
+            
+            elif method == "notifications/initialized":
+                # Notification - no response needed
+                logger.info("Client initialization complete")
+                return None
+            
+            elif method == "tools/list":
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "tools": self.get_tools()
+                    }
+                }
+            
+            elif method == "tools/call":
+                tool_name = params.get("name")
+                arguments = params.get("arguments", {})
+                
+                if tool_name == "get_drug_indications":
+                    result = await self.get_drug_indications(arguments)
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": result
+                    }
+                else:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Unknown tool: {tool_name}"
+                        }
+                    }
+            
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {method}"
+                    }
+                }
         
-        if tool_name == "get_drug_indications":
-            return await self.get_drug_indications(arguments)
-        else:
-            raise ValueError(f"Unknown tool: {tool_name}")
+        except Exception as e:
+            logger.error(f"Error handling message: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {
+                "jsonrpc": "2.0",
+                "id": message.get("id"),
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }
     
     async def get_drug_indications(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Get drug indications from OpenFDA"""
@@ -227,113 +276,22 @@ async def health_check():
         "service": "OpenFDA MCP Server"
     }
 
-async def handle_mcp_message(message: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle incoming MCP message"""
-    try:
-        method = message.get("method")
-        params = message.get("params", {})
-        msg_id = message.get("id")
-        
-        if method == "initialize":
-            result = await mcp_server.handle_initialize(params)
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": result.model_dump()
-            }
-        
-        elif method == "notifications/initialized":
-            # No response needed for notification
-            return None
-        
-        elif method == "tools/list":
-            result = await mcp_server.handle_list_tools(params)
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {"tools": result}
-            }
-        
-        elif method == "tools/call":
-            result = await mcp_server.handle_call_tool(params)
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": result
-            }
-        
-        else:
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Method not found: {method}"
-                }
-            }
-    
-    except Exception as e:
-        logger.error(f"Error handling MCP message: {str(e)}")
-        return {
-            "jsonrpc": "2.0",
-            "id": message.get("id"),
-            "error": {
-                "code": -32603,
-                "message": f"Internal error: {str(e)}"
-            }
-        }
-
-async def sse_generator(request: Request):
-    """Generate Server-Sent Events for MCP communication"""
-    
-    # Send initial connection event
-    yield f"event: message\n"
-    yield f"data: {json.dumps({'type': 'connection', 'status': 'connected'})}\n\n"
-    
-    try:
-        # Read request body for MCP messages
-        body = await request.body()
-        if body:
-            try:
-                messages = json.loads(body.decode())
-                if not isinstance(messages, list):
-                    messages = [messages]
-                
-                for message in messages:
-                    response = await handle_mcp_message(message)
-                    if response:  # Some notifications don't need responses
-                        yield f"event: message\n"
-                        yield f"data: {json.dumps(response)}\n\n"
-            
-            except json.JSONDecodeError:
-                logger.error("Invalid JSON in request body")
-                error_response = {
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32700,
-                        "message": "Parse error"
-                    }
-                }
-                yield f"event: message\n"
-                yield f"data: {json.dumps(error_response)}\n\n"
-    
-    except Exception as e:
-        logger.error(f"SSE error: {str(e)}")
-        error_response = {
-            "jsonrpc": "2.0",
-            "error": {
-                "code": -32603,
-                "message": f"Internal error: {str(e)}"
-            }
-        }
-        yield f"event: message\n"
-        yield f"data: {json.dumps(error_response)}\n\n"
+@app.options("/sse")
+async def sse_options():
+    """Handle CORS preflight for SSE endpoint"""
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Max-Age": "86400"
+    }
+    return JSONResponse(content={}, headers=headers)
 
 @app.post("/sse")
-@app.get("/sse")
 async def sse_endpoint(request: Request):
     """Server-Sent Events endpoint for MCP communication"""
     
+    # Set SSE headers
     headers = {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -343,20 +301,85 @@ async def sse_endpoint(request: Request):
         "Access-Control-Allow-Headers": "*"
     }
     
-    return StreamingResponse(
-        sse_generator(request),
-        media_type="text/event-stream",
-        headers=headers
-    )
+    async def generate_sse():
+        try:
+            # Read the request body
+            body = await request.body()
+            logger.info(f"Received SSE request body: {body.decode() if body else 'empty'}")
+            
+            if not body:
+                # Send keep-alive
+                yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+                return
+            
+            # Parse JSON messages
+            try:
+                # Handle single message or array of messages
+                content = body.decode()
+                if content.strip().startswith('['):
+                    messages = json.loads(content)
+                else:
+                    messages = [json.loads(content)]
+                
+                # Process each message
+                for message in messages:
+                    logger.info(f"Processing message: {json.dumps(message, indent=2)}")
+                    
+                    response = await mcp_server.handle_message(message)
+                    
+                    if response:  # Some notifications don't need responses
+                        logger.info(f"Sending response: {json.dumps(response, indent=2)}")
+                        yield f"data: {json.dumps(response)}\n\n"
+                    else:
+                        # Send acknowledgment for notifications
+                        yield f"data: {json.dumps({'type': 'ack'})}\n\n"
+            
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {str(e)}")
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32700,
+                        "message": "Parse error: Invalid JSON"
+                    }
+                }
+                yield f"data: {json.dumps(error_response)}\n\n"
+        
+        except Exception as e:
+            logger.error(f"SSE error: {str(e)}")
+            logger.error(traceback.format_exc())
+            error_response = {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }
+            yield f"data: {json.dumps(error_response)}\n\n"
+    
+    return StreamingResponse(generate_sse(), media_type="text/event-stream", headers=headers)
 
-@app.options("/sse")
-async def sse_options():
-    """Handle CORS preflight for SSE endpoint"""
-    return {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
+@app.get("/sse")
+async def sse_get_endpoint(request: Request):
+    """Handle GET requests to SSE endpoint for connection testing"""
+    
+    headers = {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*"
     }
+    
+    async def generate_test_sse():
+        # Send connection event
+        yield f"data: {json.dumps({'type': 'connection', 'status': 'connected', 'server': 'OpenFDA MCP Server'})}\n\n"
+        
+        # Keep connection alive
+        for i in range(5):
+            await asyncio.sleep(1)
+            yield f"data: {json.dumps({'type': 'ping', 'count': i + 1})}\n\n"
+    
+    return StreamingResponse(generate_test_sse(), media_type="text/event-stream", headers=headers)
 
 if __name__ == "__main__":
     import uvicorn
