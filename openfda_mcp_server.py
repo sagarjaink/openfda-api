@@ -17,10 +17,11 @@ from pydantic import BaseModel, Field
 from fastmcp import FastMCP
 
 # ── basic setup ───────────────────────────────────────────────────────────────
+from fastmcp import FastMCP
+
 mcp = FastMCP(
-    name="OpenFDA-Tools",
-    version="1.0.0",
-    description="Query FDA drug-label data in real time"
+    "OpenFDA Tools",
+    instructions="Query FDA drug-label data in real time"
 )
 log = logging.getLogger("openfda_mcp")
 
