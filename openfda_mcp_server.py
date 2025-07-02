@@ -87,19 +87,6 @@ async def get_drug_indications(
             ndcCodes     = ofda.get("product_ndc", []),
         ))
     return out
-
-# ── Entrypoint (Render/railway/etc. call this) ───────────────────────────────
-if __name__ == "__main__":
-    # Claude expects either SSE or Streamable-HTTP; FastMCP’s “http” transport
-    # implements the *new* Streamable-HTTP spec :contentReference[oaicite:0]{index=0}
-    port = int(os.getenv("PORT", "8000"))
-    mcp.run(
-        transport="http",
-        host="0.0.0.0",
-        port=port,
-        path="/mcp",          # this becomes your Claude “Base URL”
-        log_level="info"
-    )
 @mcp.tool(
     name="get_drug_dosage",
     description="Returns FDA-approved dosage and administration instructions for a given drug."
@@ -122,3 +109,16 @@ async def get_drug_dosage(
         section = rec.get("dosage_and_administration", [])
         out.extend(section)
     return out
+
+# ── Entrypoint (Render/railway/etc. call this) ───────────────────────────────
+if __name__ == "__main__":
+    # Claude expects either SSE or Streamable-HTTP; FastMCP’s “http” transport
+    # implements the *new* Streamable-HTTP spec :contentReference[oaicite:0]{index=0}
+    port = int(os.getenv("PORT", "8000"))
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=port,
+        path="/mcp",          # this becomes your Claude “Base URL”
+        log_level="info"
+    )
