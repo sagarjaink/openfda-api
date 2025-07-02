@@ -109,10 +109,11 @@ async def get_drug_dosage(
     limit: int = 3,
     exact_match: bool = False
 ) -> List[str]:
-    params = {"search": buildsearch(drug_name.strip(), exact_match),
+    params = {"search": _build_search(drug_name.strip(), exact_match),
               "limit": max(1, min(limit, 10))}
     log.info("OpenFDA dosage query: %s", params)
-    data = await fetchopenfda(params)
+
+    data = await _fetch_openfda(params)
     if not data.get("results"):
         return []
 
