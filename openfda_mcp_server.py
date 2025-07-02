@@ -100,3 +100,24 @@ if __name__ == "__main__":
         path="/mcp",          # this becomes your Claude “Base URL”
         log_level="info"
     )
+@mcp.tool(
+    name="get_drug_dosage",
+    description="Returns FDA-approved dosage and administration instructions for a given drug."
+)
+async def get_drug_dosage(
+    drug_name: str,
+    limit: int = 3,
+    exact_match: bool = False
+) -> List[str]:
+    params = {"search": buildsearch(drug_name.strip(), exact_match),
+              "limit": max(1, min(limit, 10))}
+    log.info("OpenFDA dosage query: %s", params)
+    data = await fetchopenfda(params)
+    if not data.get("results"):
+        return []
+
+    out: List[str] = []
+    for rec in data["results"]:
+        section = rec.get("dosage_and_administration", [])
+        out.extend(section)
+    return out
