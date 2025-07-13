@@ -87,6 +87,7 @@ async def get_drug_indications(
             ndcCodes     = ofda.get("product_ndc", []),
         ))
     return out
+
 @mcp.tool(
     name="get_drug_dosage",
     description="Returns FDA-approved dosage and administration instructions for a given drug."
@@ -107,6 +108,93 @@ async def get_drug_dosage(
     out: List[str] = []
     for rec in data["results"]:
         section = rec.get("dosage_and_administration", [])
+        out.extend(section)
+    return out
+
+@mcp.tool(
+    name="get_specific_populations",
+    description="Returns FDA 'Use in Specific Populations' info for a given drug."
+)
+async def get_specific_populations(
+    drug_name: str,
+    limit: int = 3,
+    exact_match: bool = False
+) -> List[str]:
+    params = {"search": _build_search(drug_name.strip(), exact_match),
+              "limit": max(1, min(limit, 10))}
+    log.info("OpenFDA specific populations query: %s", params)
+    data = await _fetch_openfda(params)
+    if not data.get("results"):
+        return []
+    out: List[str] = []
+    for rec in data["results"]:
+        section = rec.get("use_in_specific_populations", [])
+        out.extend(section)
+    return out
+
+
+@mcp.tool(
+    name="get_storage_handling",
+    description="Returns FDA 'How Supplied/Storage and Handling' info for a given drug."
+)
+async def get_storage_handling(
+    drug_name: str,
+    limit: int = 3,
+    exact_match: bool = False
+) -> List[str]:
+    params = {"search": _build_search(drug_name.strip(), exact_match),
+              "limit": max(1, min(limit, 10))}
+    log.info("OpenFDA storage & handling query: %s", params)
+    data = await _fetch_openfda(params)
+    if not data.get("results"):
+        return []
+    out: List[str] = []
+    for rec in data["results"]:
+        section = rec.get("how_supplied_storage_and_handling", [])
+        out.extend(section)
+    return out
+
+
+@mcp.tool(
+    name="get_warnings_precautions",
+    description="Returns FDA 'Warnings and Precautions' section for a given drug."
+)
+async def get_warnings_precautions(
+    drug_name: str,
+    limit: int = 3,
+    exact_match: bool = False
+) -> List[str]:
+    params = {"search": _build_search(drug_name.strip(), exact_match),
+              "limit": max(1, min(limit, 10))}
+    log.info("OpenFDA warnings query: %s", params)
+    data = await _fetch_openfda(params)
+    if not data.get("results"):
+        return []
+    out: List[str] = []
+    for rec in data["results"]:
+        section = rec.get("warnings_and_precautions", [])
+        out.extend(section)
+    return out
+
+
+@mcp.tool(
+    name="get_clinical_pharmacology",
+    description="Returns FDA 'Clinical Pharmacology' information for a given drug."
+)
+async def get_clinical_pharmacology(
+    drug_name: str,
+    limit: int = 3,
+    exact_match: bool = False
+) -> List[str]:
+    params = {"search": _build_search(drug_name.strip(), exact_match),
+              "limit": max(1, min(limit, 10))}
+    log.info("OpenFDA clinical pharmacology query: %s", params)
+    data = await _fetch_openfda(params)
+    if not data.get("results"):
+        return []
+    out: List[str] = []
+    for rec in data["results"]:
+        section = rec.get("clinical_pharmacology", [])
         out.extend(section)
     return out
 
