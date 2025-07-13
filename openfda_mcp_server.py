@@ -1,34 +1,26 @@
 """
-Remote MCP server that exposes one tool:
-
-    get_drug_indications(drug_name: str,
-                         limit: int = 3,
-                         exact_match: bool = False)
-→ Returns FDA-approved “indications & usage” text, plus metadata.
-
+Remote MCP server that exposes 7 tools for querying FDA drug label data by drug name, NDC, manufacturer, dosage form, or route.
 Transport: Streamable-HTTP  (Claude-compatible)
 Path:      /mcp
 """
 
-import os, httpx, logging, asyncio
+import os, httpx, logging, asyncio, re
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP
 
 # ── basic setup ───────────────────────────────────────────────────────────────
-from fastmcp import FastMCP
-
 mcp = FastMCP(
     "OpenFDA Tools",
     instructions="Query FDA drug-label data in real time"
 )
 log = logging.getLogger("openfda_mcp")
 
-OPENFDA_URL = "https://api.fda.gov/drug/label.json"    # official endpoint
-TIMEOUT      = 20
+OPENFDA_URL = "https://api.fda.gov/drug/label.json"
+TIMEOUT = 20
 
-# ── Structured output schema (nice for Claude) ───────────────────────────────
+# ── Structured output schema ──────────────────────────────────────────────────
 class DrugInfo(BaseModel):
     brand_names:   List[str] = Field(..., alias="brandNames")
     generic_names: List[str] = Field(..., alias="genericNames")
@@ -45,190 +37,139 @@ async def _fetch_openfda(params: dict) -> dict:
         r.raise_for_status()
         return r.json()
 
-def _build_search(drug: str, exact: bool) -> str:
-    if exact:
-        return (f'openfda.brand_name.exact:"{drug}" OR '
-                f'openfda.generic_name.exact:"{drug}"')
-    return (f'openfda.brand_name:"{drug}" OR '
-            f'openfda.generic_name:"{drug}" OR '
-            f'openfda.substance_name:"{drug}"')
+def _build_search(
+    drug: Optional[str],
+    manufacturer: Optional[str] = None,
+    dosage_form: Optional[str] = None,
+    route: Optional[str] = None,
+    ndc: Optional[str] = None,
+    exact: bool = False
+) -> str:
+    query_parts = []
 
-# ── The MCP tool Claude will call ────────────────────────────────────────────
+    ndc_pattern = r"^\d{5}-\d{3,4}-\d{1,2}$"
+    if ndc and re.match(ndc_pattern, ndc.strip()):
+        return f'openfda.product_ndc:"{ndc.strip()}"'
+
+    if drug:
+        fields = [
+            "openfda.brand_name",
+            "openfda.generic_name",
+            "openfda.substance_name"
+        ]
+        query_parts.append("(" + " OR ".join(
+            f'{field}.exact:"{drug}"' if exact else f'{field}:"{drug}"'
+            for field in fields
+        ) + ")")
+
+    if manufacturer:
+        query_parts.append(f'openfda.manufacturer_name:"{manufacturer}"')
+    if dosage_form:
+        query_parts.append(f'openfda.dosage_form:"{dosage_form}"')
+    if route:
+        query_parts.append(f'openfda.route:"{route}"')
+
+    return " AND ".join(query_parts) if query_parts else "*:*"
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
 @mcp.tool(
     name="get_drug_indications",
-    description="Returns FDA-approved ‘Indications & Usage’ text plus metadata."
+    description="Returns FDA-approved indications. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
 async def get_drug_indications(
-    drug_name: str,
+    drug_name: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    dosage_form: Optional[str] = None,
+    route: Optional[str] = None,
+    ndc: Optional[str] = None,
     limit: int = 3,
     exact_match: bool = False
 ) -> List[DrugInfo]:
-    """
-    drug_name   – brand, generic or ingredient name
-    limit       – max number of label records (1-10)
-    exact_match – if True, search only exact brand/generic
-    """
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit":  max(1, min(limit, 10))}
-    log.info("OpenFDA params: %s", params)
-
+    params = {"search": _build_search(drug_name, manufacturer, dosage_form, route, ndc, exact_match),
+              "limit": max(1, min(limit, 10))}
     data = await _fetch_openfda(params)
     if not data.get("results"):
         return []
-
     out: List[DrugInfo] = []
     for rec in data["results"]:
         ofda = rec.get("openfda", {})
         out.append(DrugInfo(
-            brandNames   = ofda.get("brand_name", []),
-            genericNames = ofda.get("generic_name", []),
-            manufacturer = ofda.get("manufacturer_name", []),
-            indications  = rec.get("indications_and_usage", []),
-            ndcCodes     = ofda.get("product_ndc", []),
+            brandNames=ofda.get("brand_name", []),
+            genericNames=ofda.get("generic_name", []),
+            manufacturer=ofda.get("manufacturer_name", []),
+            indications=rec.get("indications_and_usage", []),
+            ndcCodes=ofda.get("product_ndc", []),
         ))
     return out
 
-@mcp.tool(
-    name="get_drug_dosage",
-    description="Returns FDA-approved dosage and administration instructions for a given drug."
+# ── One-template tools for other sections ─────────────────────────────────────
+def make_simple_tool(section: str, tool_name: str, description: str):
+    @mcp.tool(name=tool_name, description=description)
+    async def tool(
+        drug_name: Optional[str] = None,
+        manufacturer: Optional[str] = None,
+        dosage_form: Optional[str] = None,
+        route: Optional[str] = None,
+        ndc: Optional[str] = None,
+        limit: int = 3,
+        exact_match: bool = False
+    ) -> List[str]:
+        params = {"search": _build_search(drug_name, manufacturer, dosage_form, route, ndc, exact_match),
+                  "limit": max(1, min(limit, 10))}
+        data = await _fetch_openfda(params)
+        if not data.get("results"):
+            return []
+        out: List[str] = []
+        for rec in data["results"]:
+            section_data = rec.get(section, [])
+            out.extend(section_data)
+        return out
+    return tool
+
+# Registering all tools
+get_drug_dosage = make_simple_tool(
+    "dosage_and_administration",
+    "get_drug_dosage",
+    "Returns FDA-approved dosage and administration instructions. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
-async def get_drug_dosage(
-    drug_name: str,
-    limit: int = 3,
-    exact_match: bool = False
-) -> List[str]:
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit": max(1, min(limit, 10))}
-    log.info("OpenFDA dosage query: %s", params)
 
-    data = await _fetch_openfda(params)
-    if not data.get("results"):
-        return []
-
-    out: List[str] = []
-    for rec in data["results"]:
-        section = rec.get("dosage_and_administration", [])
-        out.extend(section)
-    return out
-
-@mcp.tool(
-    name="get_specific_populations",
-    description="Returns FDA 'Use in Specific Populations' info for a given drug."
+get_specific_populations = make_simple_tool(
+    "use_in_specific_populations",
+    "get_specific_populations",
+    "Returns FDA 'Use in Specific Populations' info. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
-async def get_specific_populations(
-    drug_name: str,
-    limit: int = 3,
-    exact_match: bool = False
-) -> List[str]:
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit": max(1, min(limit, 10))}
-    log.info("OpenFDA specific populations query: %s", params)
-    data = await _fetch_openfda(params)
-    if not data.get("results"):
-        return []
-    out: List[str] = []
-    for rec in data["results"]:
-        section = rec.get("use_in_specific_populations", [])
-        out.extend(section)
-    return out
 
-
-@mcp.tool(
-    name="get_storage_handling",
-    description="Returns FDA 'How Supplied/Storage and Handling' info for a given drug."
+get_storage_handling = make_simple_tool(
+    "how_supplied_storage_and_handling",
+    "get_storage_handling",
+    "Returns FDA 'How Supplied/Storage and Handling' info. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
-async def get_storage_handling(
-    drug_name: str,
-    limit: int = 3,
-    exact_match: bool = False
-) -> List[str]:
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit": max(1, min(limit, 10))}
-    log.info("OpenFDA storage & handling query: %s", params)
-    data = await _fetch_openfda(params)
-    if not data.get("results"):
-        return []
-    out: List[str] = []
-    for rec in data["results"]:
-        section = rec.get("how_supplied_storage_and_handling", [])
-        out.extend(section)
-    return out
 
-
-@mcp.tool(
-    name="get_warnings_precautions",
-    description="Returns FDA 'Warnings and Precautions' section for a given drug."
+get_warnings_precautions = make_simple_tool(
+    "warnings_and_precautions",
+    "get_warnings_precautions",
+    "Returns FDA 'Warnings and Precautions' info. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
-async def get_warnings_precautions(
-    drug_name: str,
-    limit: int = 3,
-    exact_match: bool = False
-) -> List[str]:
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit": max(1, min(limit, 10))}
-    log.info("OpenFDA warnings query: %s", params)
-    data = await _fetch_openfda(params)
-    if not data.get("results"):
-        return []
-    out: List[str] = []
-    for rec in data["results"]:
-        section = rec.get("warnings_and_precautions", [])
-        out.extend(section)
-    return out
 
-
-@mcp.tool(
-    name="get_clinical_pharmacology",
-    description="Returns FDA 'Clinical Pharmacology' information for a given drug."
+get_clinical_pharmacology = make_simple_tool(
+    "clinical_pharmacology",
+    "get_clinical_pharmacology",
+    "Returns FDA 'Clinical Pharmacology' info. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
-async def get_clinical_pharmacology(
-    drug_name: str,
-    limit: int = 3,
-    exact_match: bool = False
-) -> List[str]:
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit": max(1, min(limit, 10))}
-    log.info("OpenFDA clinical pharmacology query: %s", params)
-    data = await _fetch_openfda(params)
-    if not data.get("results"):
-        return []
-    out: List[str] = []
-    for rec in data["results"]:
-        section = rec.get("clinical_pharmacology", [])
-        out.extend(section)
-    return out
-@mcp.tool(
-    name="get_drug_description",
-    description="Returns FDA-approved product description text for a given drug."
+
+get_drug_description = make_simple_tool(
+    "description",
+    "get_drug_description",
+    "Returns FDA-approved product description. Supports filtering by drug name, NDC, manufacturer, dosage form, and route."
 )
-async def get_drug_description(
-    drug_name: str,
-    limit: int = 3,
-    exact_match: bool = False
-) -> List[str]:
-    params = {"search": _build_search(drug_name.strip(), exact_match),
-              "limit": max(1, min(limit, 10))}
-    log.info("OpenFDA description query: %s", params)
 
-    data = await _fetch_openfda(params)
-    if not data.get("results"):
-        return []
-
-    out: List[str] = []
-    for rec in data["results"]:
-        section = rec.get("description", [])
-        out.extend(section)
-    return out
-
-# ── Entrypoint (Render/railway/etc. call this) ───────────────────────────────
+# ── Entrypoint ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Claude expects either SSE or Streamable-HTTP; FastMCP’s “http” transport
-    # implements the *new* Streamable-HTTP spec :contentReference[oaicite:0]{index=0}
     port = int(os.getenv("PORT", "8000"))
     mcp.run(
         transport="http",
         host="0.0.0.0",
         port=port,
-        path="/mcp",          # this becomes your Claude “Base URL”
+        path="/mcp",
         log_level="info"
     )
