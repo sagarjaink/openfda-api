@@ -197,6 +197,28 @@ async def get_clinical_pharmacology(
         section = rec.get("clinical_pharmacology", [])
         out.extend(section)
     return out
+@mcp.tool(
+    name="get_drug_description",
+    description="Returns FDA-approved product description text for a given drug."
+)
+async def get_drug_description(
+    drug_name: str,
+    limit: int = 3,
+    exact_match: bool = False
+) -> List[str]:
+    params = {"search": _build_search(drug_name.strip(), exact_match),
+              "limit": max(1, min(limit, 10))}
+    log.info("OpenFDA description query: %s", params)
+
+    data = await _fetch_openfda(params)
+    if not data.get("results"):
+        return []
+
+    out: List[str] = []
+    for rec in data["results"]:
+        section = rec.get("description", [])
+        out.extend(section)
+    return out
 
 # ── Entrypoint (Render/railway/etc. call this) ───────────────────────────────
 if __name__ == "__main__":
