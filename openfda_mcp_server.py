@@ -37,6 +37,46 @@ async def _fetch_openfda(params: dict) -> dict:
         r.raise_for_status()
         return r.json()
 
+# ── NEW: Smart NDC format handler ─────────────────────────────────────────────
+def _normalize_ndc(ndc_input: str) -> List[str]:
+    """
+    Convert NDC input into possible valid formats.
+    NDC can be 10 or 11 digits in 3 segments with various patterns.
+    """
+    if not ndc_input:
+        return []
+    
+    # Clean input - remove spaces, hyphens, and normalize
+    clean_ndc = re.sub(r'[^\d]', '', ndc_input.strip())
+    
+    # Validate basic format (10 or 11 digits)
+    if not re.match(r'^\d{10,11}$', clean_ndc):
+        return []
+    
+    possible_formats = set()
+    
+    # Add the cleaned version (no hyphens)
+    possible_formats.add(clean_ndc)
+    
+    # If original had hyphens, keep that format too
+    if '-' in ndc_input:
+        possible_formats.add(ndc_input.strip())
+    
+    # Generate common NDC formats based on length
+    if len(clean_ndc) == 10:
+        # 10-digit NDC patterns
+        possible_formats.add(f"{clean_ndc[:4]}-{clean_ndc[4:7]}-{clean_ndc[7:]}")  # 4-3-3
+        possible_formats.add(f"{clean_ndc[:5]}-{clean_ndc[5:8]}-{clean_ndc[8:]}")  # 5-3-2
+        possible_formats.add(f"{clean_ndc[:5]}-{clean_ndc[5:7]}-{clean_ndc[7:]}")  # 5-2-3
+    elif len(clean_ndc) == 11:
+        # 11-digit NDC patterns  
+        possible_formats.add(f"{clean_ndc[:5]}-{clean_ndc[5:9]}-{clean_ndc[9:]}")  # 5-4-2
+        possible_formats.add(f"{clean_ndc[:5]}-{clean_ndc[5:8]}-{clean_ndc[8:]}")  # 5-3-3
+        possible_formats.add(f"{clean_ndc[:4]}-{clean_ndc[4:8]}-{clean_ndc[8:]}")  # 4-4-3
+    
+    return list(possible_formats)
+
+# ── UPDATED: Better search builder ───────────────────────────────────────────
 def _build_search(
     drug: Optional[str],
     manufacturer: Optional[str] = None,
@@ -47,21 +87,34 @@ def _build_search(
 ) -> str:
     query_parts = []
 
-    ndc_pattern = r"^\d{5}-\d{3,4}-\d{1,2}$"
-    if ndc and re.match(ndc_pattern, ndc.strip()):
-        return f'openfda.product_ndc:"{ndc.strip()}"'
-
+    # Handle NDC queries with multiple format attempts
+    if ndc:
+        ndc_formats = _normalize_ndc(ndc)
+        if ndc_formats:
+            # Try all possible NDC formats
+            ndc_queries = []
+            for ndc_format in ndc_formats:
+                ndc_queries.append(f'openfda.product_ndc:"{ndc_format}"')
+            
+            # If NDC is provided and valid, make it the primary search
+            # but still allow additional filters
+            ndc_query = "(" + " OR ".join(ndc_queries) + ")"
+            query_parts.append(ndc_query)
+    
+    # Add drug name query if provided
     if drug:
         fields = [
             "openfda.brand_name",
-            "openfda.generic_name",
+            "openfda.generic_name", 
             "openfda.substance_name"
         ]
-        query_parts.append("(" + " OR ".join(
+        drug_query = "(" + " OR ".join(
             f'{field}.exact:"{drug}"' if exact else f'{field}:"{drug}"'
             for field in fields
-        ) + ")")
+        ) + ")"
+        query_parts.append(drug_query)
 
+    # Add other filters
     if manufacturer:
         query_parts.append(f'openfda.manufacturer_name:"{manufacturer}"')
     if dosage_form:
