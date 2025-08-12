@@ -37,6 +37,21 @@ async def _fetch_openfda(params: dict) -> dict:
         r.raise_for_status()
         return r.json()
 
+# Add this helper function for debugging
+async def _fetch_openfda_with_logging(params: dict) -> dict:
+    """Enhanced version with logging for debugging NDC searches"""
+    log.info(f"FDA API query: {params}")
+    
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        r = await client.get(OPENFDA_URL, params=params)
+        if r.status_code == 404:
+            log.info(f"No results found for query: {params['search']}")
+            return {"results": []}
+        r.raise_for_status()
+        result = r.json()
+        log.info(f"Found {len(result.get('results', []))} results")
+        return result
+        
 # ── NEW: Smart NDC format handler ─────────────────────────────────────────────
 def _normalize_ndc(ndc_input: str) -> List[str]:
     """
@@ -192,7 +207,7 @@ async def get_drug_indications(
 ) -> List[DrugInfo]:
     params = {"search": _build_search(drug_name, manufacturer, dosage_form, route, ndc, exact_match),
               "limit": max(1, min(limit, 10))}
-    data = await _fetch_openfda(params)
+    data = await _fetch_openfda_with_logging(params)
     if not data.get("results"):
         return []
     out: List[DrugInfo] = []
@@ -221,7 +236,7 @@ def make_simple_tool(section: str, tool_name: str, description: str):
     ) -> List[str]:
         params = {"search": _build_search(drug_name, manufacturer, dosage_form, route, ndc, exact_match),
                   "limit": max(1, min(limit, 10))}
-        data = await _fetch_openfda(params)
+        data = await _fetch_openfda_with_logging(params)
         if not data.get("results"):
             return []
         out: List[str] = []
