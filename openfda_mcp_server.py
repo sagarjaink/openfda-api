@@ -52,65 +52,35 @@ async def _fetch_openfda_with_logging(params: dict) -> dict:
         log.info(f"Found {len(result.get('results', []))} results")
         return result
         
-# ── NEW: Smart NDC format handler ─────────────────────────────────────────────
+# ── FIXED: Simplified NDC format handler ─────────────────────────────────────────
 def _normalize_ndc(ndc_input: str) -> List[str]:
     """
-    Convert NDC input into FDA-compatible formats.
-    NDC format: labeler-product-package (can be 4-4-2, 5-3-2, or 5-4-2)
-    Leading zeros are often dropped in FDA database.
+    Simplified NDC format handler - only try the most common valid formats.
+    This fixes the complex query issue that was causing fallback results.
     """
     if not ndc_input:
         return []
     
-    # Clean input - remove spaces, hyphens
-    clean_ndc = re.sub(r'[^\d]', '', ndc_input.strip())
+    ndc_input = ndc_input.strip()
+    formats = [ndc_input]
     
-    # Validate basic format (10 or 11 digits)
-    if not re.match(r'^\d{10,11}$', clean_ndc):
-        return []
-    
-    possible_formats = set()
-    
-    # Keep original format if it has hyphens
-    original = ndc_input.strip()
-    if '-' in original:
-        possible_formats.add(original)
-    
-    # Add clean version (no hyphens)
-    possible_formats.add(clean_ndc)
-    
-    # Generate standard NDC formats, removing leading zeros intelligently
-    if len(clean_ndc) == 10:
-        # Standard 10-digit patterns
-        formats_to_try = [
-            f"{clean_ndc[:4]}-{clean_ndc[4:7]}-{clean_ndc[7:]}",  # 4-3-3
-            f"{clean_ndc[:5]}-{clean_ndc[5:8]}-{clean_ndc[8:]}",  # 5-3-2
-            f"{clean_ndc[:5]}-{clean_ndc[5:7]}-{clean_ndc[7:]}",  # 5-2-3
-        ]
-    elif len(clean_ndc) == 11:
-        # Standard 11-digit patterns
-        formats_to_try = [
-            f"{clean_ndc[:5]}-{clean_ndc[5:9]}-{clean_ndc[9:]}",  # 5-4-2
-            f"{clean_ndc[:5]}-{clean_ndc[5:8]}-{clean_ndc[8:]}",  # 5-3-3
-            f"{clean_ndc[:4]}-{clean_ndc[4:8]}-{clean_ndc[8:]}",  # 4-4-3
-        ]
+    # If it has hyphens, also try without hyphens
+    if '-' in ndc_input:
+        clean_ndc = re.sub(r'[^\d]', '', ndc_input)
+        if len(clean_ndc) >= 9:  # Valid NDC should be at least 9 digits
+            formats.append(clean_ndc)
     else:
-        formats_to_try = []
+        # If no hyphens and looks like a valid NDC, try adding standard hyphenation
+        clean_ndc = re.sub(r'[^\d]', '', ndc_input)
+        if len(clean_ndc) == 10:
+            # Try 5-4-1 format (most common)
+            formats.append(f"{clean_ndc[:5]}-{clean_ndc[5:9]}-{clean_ndc[9:]}")
+        elif len(clean_ndc) == 11:
+            # Try 5-4-2 format (most common)
+            formats.append(f"{clean_ndc[:5]}-{clean_ndc[5:9]}-{clean_ndc[9:]}")
     
-    # Add formats and variants with leading zeros removed
-    for fmt in formats_to_try:
-        possible_formats.add(fmt)
-        
-        # Create version with leading zeros stripped from each segment
-        parts = fmt.split('-')
-        stripped_parts = [part.lstrip('0') or '0' for part in parts]
-        stripped_format = '-'.join(stripped_parts)
-        possible_formats.add(stripped_format)
-    
-    # Remove empty or invalid formats
-    valid_formats = [f for f in possible_formats if f and not f.startswith('-') and not f.endswith('-')]
-    
-    return valid_formats
+    # Return only unique, valid formats (max 3 to keep query simple)
+    return list(dict.fromkeys(formats))[:3]
 
 
 # ── UPDATED: Better search builder ───────────────────────────────────────────
