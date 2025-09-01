@@ -17,6 +17,8 @@ mcp = FastMCP(
 )
 log = logging.getLogger("openfda_mcp")
 
+app = mcp
+
 OPENFDA_URL = "https://api.fda.gov/drug/label.json"
 TIMEOUT = 20
 
